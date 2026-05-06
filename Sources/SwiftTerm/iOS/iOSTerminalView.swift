@@ -2179,8 +2179,21 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
         _selectedTextRange = TextRange(from: TextPosition(offset: newOffset), to: TextPosition(offset: newOffset))
         endTextInputEdit()
 
-        sendBackspaceKey()
-        send(txt: String(composed))
+        // Integrate with the IME mirror buffer model: replace the last char
+        // of imeBuffer with the composed syllable and re-render locally. The
+        // PTY commit happens later via flushHangulComposition (space, enter,
+        // or non-Hangul next char). The original implementation called
+        // sendBackspaceKey() + send(txt: composed) which bypassed our buffer
+        // and produced ghosted duplicates ('한한' for '한글').
+        if !imeBuffer.isEmpty {
+            imeBuffer = String(imeBuffer.dropLast()) + String(composed)
+            terminal.feed(text: "\u{1B}8\u{1B}[K")
+        } else {
+            terminal.feed(text: "\u{1B}7")
+            imeBuffer = String(composed)
+        }
+        terminal.feed(text: imeBuffer)
+        NSLog("[SwiftTermIME] koreanFinal compose buffer=%@", imeBuffer)
         queuePendingDisplay()
         return true
     }
