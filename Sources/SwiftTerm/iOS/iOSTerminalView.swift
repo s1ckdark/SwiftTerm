@@ -2065,6 +2065,12 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
         } else if lastLead != nil && lastLead == newLead {
             // Same lead consonant → IME is still building the same syllable.
             imeBuffer = String(imeBuffer.dropLast()) + text
+        } else if let last = imeBuffer.last, let new = text.first,
+                  let combined = combineCompoundMedial(into: last, with: new) {
+            // Compound vowel absorption (e.g. 도 + ㅣ → 되). iPad's hardware
+            // Korean IME emits the second medial as a standalone jamo instead
+            // of replacing the syllable, so we synthesize the compound here.
+            imeBuffer = String(imeBuffer.dropLast()) + String(combined)
         } else {
             // Different lead → previous syllable committed implicitly; append.
             imeBuffer += text
@@ -2073,6 +2079,41 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
         terminal.feed(text: imeBuffer)
         NSLog("[SwiftTermIME] compose buffer=%@", imeBuffer)
         queuePendingDisplay()
+    }
+
+    /// Try to fold a standalone medial jamo into the existing syllable's
+    /// medial, producing a compound vowel. Only valid for syllables without
+    /// a final consonant. Returns the new syllable, or nil if no compound.
+    private func combineCompoundMedial(into lastChar: Character,
+                                        with jamo: Character) -> Character? {
+        // Compound jamo (the second piece) → its index in the 21-vowel table.
+        let secondIndex: [Character: Int] = [
+            "ㅏ": 0, "ㅐ": 1, "ㅓ": 4, "ㅔ": 5, "ㅣ": 20,
+        ]
+        guard let jamoVIdx = secondIndex[jamo] else { return nil }
+
+        guard lastChar.unicodeScalars.count == 1,
+              let scalar = lastChar.unicodeScalars.first else { return nil }
+        let v = Int(scalar.value)
+        guard v >= 0xAC00, v <= 0xD7A3 else { return nil }
+
+        let sIndex = v - 0xAC00
+        let lIndex = sIndex / (21 * 28)
+        let baseVIdx = (sIndex % (21 * 28)) / 28
+        let tIndex = sIndex % 28
+        guard tIndex == 0 else { return nil }    // no existing final
+
+        // (existing medial idx) → (new medial jamo idx) → (compound medial idx)
+        let table: [Int: [Int: Int]] = [
+            8:  [0: 9, 1: 10, 20: 11],   // ㅗ + ㅏ/ㅐ/ㅣ → ㅘ/ㅙ/ㅚ
+            13: [4: 14, 5: 15, 20: 16],  // ㅜ + ㅓ/ㅔ/ㅣ → ㅝ/ㅞ/ㅟ
+            18: [20: 19],                // ㅡ + ㅣ      → ㅢ
+        ]
+        guard let newVIdx = table[baseVIdx]?[jamoVIdx] else { return nil }
+
+        let newSIndex = lIndex * 21 * 28 + newVIdx * 28
+        guard let newScalar = UnicodeScalar(0xAC00 + newSIndex) else { return nil }
+        return Character(newScalar)
     }
 
     /// End composition: erase local rendering and send the accumulated bytes
