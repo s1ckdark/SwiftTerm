@@ -281,8 +281,26 @@ extension TerminalView: UITextInput {
     
     public func unmarkText() {
         uitiLog("unmarkText() \(textInputStateDescription())")
+        NSLog("[SwiftTermIME] unmarkText buffer=%@", imeBuffer)
         if let previouslyMarkedRange = _markedTextRange {
-            // Ensure that multi-char input (Chinese-Japanese keyboards) works:
+            // If our IME mirror buffer has content, the marked text is already
+            // drawn locally — flush it to the PTY in one shot. We cannot fall
+            // through to insertText(previouslyMarkedText) because that re-enters
+            // commitTextInput / handleHangulCompose and is treated as another
+            // composition step (same lead = replace), so the syllable never
+            // actually reaches the PTY and the next setMarkedText clobbers
+            // the local rendering — producing duplicates like '한한' for '한글'.
+            if !imeBuffer.isEmpty {
+                flushHangulComposition()
+                beginTextInputEdit()
+                let rangeEndPosition = previouslyMarkedRange.endPosition
+                _selectedTextRange = TextRange(from: rangeEndPosition, to: rangeEndPosition)
+                _markedTextRange = nil
+                endTextInputEdit()
+                return
+            }
+            // Original SwiftTerm path: multi-char input from non-Korean IMEs
+            // (Chinese, Japanese) where the mirror logic wasn't engaged.
             if let previouslyMarkedText = text(in: previouslyMarkedRange) {
                 if previouslyMarkedText.count > 0 {
                     uitiLog("unmarkText commit:\(previouslyMarkedText.debugDescription) range:\(previouslyMarkedRange)")
@@ -295,7 +313,7 @@ extension TerminalView: UITextInput {
             _selectedTextRange = TextRange(from: rangeEndPosition, to: rangeEndPosition)
             _markedTextRange = nil
             endTextInputEdit()
-        }        
+        }
     }
     
     public var beginningOfDocument: UITextPosition {
