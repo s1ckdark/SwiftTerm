@@ -2082,8 +2082,14 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
             // Start of composition — save the cursor for later restore.
             terminal.feed(text: "\u{1B}7")
             imeBuffer = text
-        } else if lastLead != nil && lastLead == newLead {
-            // Same lead consonant → IME is still building the same syllable.
+        } else if lastLead != nil && lastLead == newLead,
+                  let last = imeBuffer.last, isStillComposingSyllable(last) {
+            // Same lead consonant AND the last char is still "open" for
+            // in-syllable progression (jamo, or syllable without a final).
+            // Catalyst sends progressive insertText for one syllable: ㅎ → 하
+            // → 한. If the last char already has a final consonant, the new
+            // same-lead char is a NEW syllable — append instead, otherwise
+            // '한글은' + 'ㅇ' would clobber '은'.
             imeBuffer = String(imeBuffer.dropLast()) + text
         } else if let last = imeBuffer.last, let new = text.first,
                   let combined = combineCompoundMedial(into: last, with: new) {
@@ -2099,6 +2105,25 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
         terminal.feed(text: imeBuffer)
         imeLog("compose buffer=\(imeBuffer)")
         queuePendingDisplay()
+    }
+
+    /// True when `c` is either a single jamo or a Hangul syllable with no
+    /// final consonant — i.e. the syllable can still grow during composition.
+    /// Used to disambiguate same-lead progression (ㅎ → 하 → 한) from the
+    /// '`한` is done, new syllable starts with ㅎ' case.
+    private func isStillComposingSyllable(_ c: Character) -> Bool {
+        guard c.unicodeScalars.count == 1, let scalar = c.unicodeScalars.first
+        else { return false }
+        let v = Int(scalar.value)
+        // Jamo: lead + medial + compat — always "open".
+        if (0x1100...0x11FF).contains(v) || (0x3130...0x318F).contains(v) {
+            return true
+        }
+        // Syllable: open only when there is no final consonant (tIndex == 0).
+        if (0xAC00...0xD7A3).contains(v) {
+            return (v - 0xAC00) % 28 == 0
+        }
+        return false
     }
 
     /// Try to fold a standalone medial jamo into the existing syllable's
