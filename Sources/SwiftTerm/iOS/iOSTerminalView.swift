@@ -2088,6 +2088,35 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
         queuePendingDisplay()
     }
 
+    /// Mirror the IME-marked text into the local terminal grid. Called from
+    /// the iOS UITextInput path (setMarkedText). The full marked string is
+    /// re-emitted at the saved cursor each call, so the visible state always
+    /// matches what the IME thinks the user is composing.
+    func mirrorMarkedToLocal(_ text: String) {
+        if imeBuffer.isEmpty {
+            terminal.feed(text: "\u{1B}7")
+        } else {
+            terminal.feed(text: "\u{1B}8\u{1B}[K")
+        }
+        imeBuffer = text
+        if !imeBuffer.isEmpty {
+            terminal.feed(text: imeBuffer)
+        }
+        NSLog("[SwiftTermIME] mirrorMarked buffer=%@", imeBuffer)
+        queuePendingDisplay()
+    }
+
+    /// Clear local IME rendering without sending anything to the PTY. Used
+    /// by unmarkText's empty-text path (when the IME unmarks without a
+    /// commit) so we don't leave stale local cells behind.
+    func clearMarkedLocal() {
+        if !imeBuffer.isEmpty {
+            terminal.feed(text: "\u{1B}8\u{1B}[K")
+            imeBuffer = ""
+            queuePendingDisplay()
+        }
+    }
+
     /// BS while composing: shrink the local buffer and re-render. Returns
     /// true if BS was absorbed locally (caller must skip the PTY send).
     private func handleBackspaceForIME() -> Bool {

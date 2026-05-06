@@ -230,6 +230,18 @@ extension TerminalView: UITextInput {
         NSLog("[SwiftTermIME] setMarkedText: %@", markedText ?? "<nil>")
         uitiLog("setMarkedText(\(markedText?.debugDescription ?? "nil"), selectedRange:\(selectedRange)) \(textInputStateDescription())")
 
+        // iOS path (e.g. iPad with hardware Korean keyboard): mirror the
+        // marked composition into the local terminal grid so the user sees
+        // ㅎ → 하 → 한 etc. on screen. Without this, setMarkedText only
+        // touches internal storage and the terminal stays blank during
+        // composition. The PTY commit happens later via unmarkText →
+        // insertText (caught by commitTextInput's prefix-match branch).
+        if let m = markedText {
+            mirrorMarkedToLocal(m)
+        } else {
+            clearMarkedLocal()
+        }
+
         let rangeToReplace = _markedTextRange ?? _selectedTextRange
         let rangeStartPosition = rangeToReplace.startPosition
 
