@@ -1623,6 +1623,18 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
                 self.send(data: returnByteSequence [0...])
             } else if isHangul(textToInsert) {
                 handleHangulCompose(textToInsert)
+            } else if !imeBuffer.isEmpty && textToInsert.hasPrefix(imeBuffer) {
+                // Catalyst IME often re-emits the whole composing buffer when
+                // the user switches IMEs / types a non-Hangul character — e.g.
+                // buffer "한글" then `insertText("한글a")`. Strip the duplicate
+                // prefix so zsh doesn't see "한글한글a".
+                let suffix = String(textToInsert.dropFirst(imeBuffer.count))
+                NSLog("[SwiftTermIME] prefix-match commit: buffer=%@ suffix=%@",
+                      imeBuffer, suffix)
+                flushHangulComposition()
+                if !suffix.isEmpty {
+                    self.send(txt: suffix)
+                }
             } else {
                 flushHangulComposition()
                 NSLog("[SwiftTermIME] sending bytes: %@", textToInsert)
@@ -2016,6 +2028,10 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
     }
 
     private func sendBackspaceKey() {
+        // While Hangul composition is active, BS shrinks the local buffer
+        // instead of going to the PTY (zsh hasn't seen the chars yet).
+        if handleBackspaceForIME() { return }
+
         if terminal.keyboardEnhancementFlags.isEmpty {
             send([backspaceSendsControlH ? 8 : 0x7f])
             return
@@ -2030,37 +2046,32 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
     }
 
     // macOS Catalyst Korean IME workaround state.
-    // imePending: Hangul that has been "committed" by the IME (lead consonant
-    //   change) but not yet sent to the PTY because composition is still active.
-    // imeComposing: the syllable currently being composed (replaced in place).
-    // The local terminal renders (imePending + imeComposing) at a saved cursor
-    // position; on flush, we erase the local rendering and send the bytes once.
-    var imePending: String = ""
-    var imeComposing: String?
+    // imeBuffer holds every Hangul char locally rendered but not yet sent to
+    // the PTY. Each syllable from the IME either replaces the last char (same
+    // lead consonant = composition continues) or appends (new syllable). On
+    // any non-Hangul input or commit trigger the whole buffer is sent in one
+    // shot and the local rendering is erased, so zsh only sees finished text.
+    var imeBuffer: String = ""
 
-    /// Local-only render of (imePending + imeComposing). Erases prior local
-    /// drawing and re-emits the full composing string at the saved cursor.
+    /// Render (or re-render) the imeBuffer locally at the saved cursor.
     private func handleHangulCompose(_ text: String) {
         let newLead = hangulLeadIndex(text)
-        let prevLead = imeComposing.flatMap { hangulLeadIndex($0) }
+        let lastLead = imeBuffer.last.flatMap { hangulLeadIndex(String($0)) }
 
-        if imeComposing == nil {
+        if imeBuffer.isEmpty {
             // Start of composition — save the cursor for later restore.
             terminal.feed(text: "\u{1B}7")
-            terminal.feed(text: text)
-        } else if prevLead == newLead {
-            // Continuing the same syllable — replace in place.
-            terminal.feed(text: "\u{1B}8\u{1B}[K")
-            terminal.feed(text: imePending + text)
+            imeBuffer = text
+        } else if lastLead != nil && lastLead == newLead {
+            // Same lead consonant → IME is still building the same syllable.
+            imeBuffer = String(imeBuffer.dropLast()) + text
         } else {
-            // Different lead → previous composing is an implicit commit.
-            imePending += imeComposing ?? ""
-            terminal.feed(text: "\u{1B}8\u{1B}[K")
-            terminal.feed(text: imePending + text)
+            // Different lead → previous syllable committed implicitly; append.
+            imeBuffer += text
         }
-        imeComposing = text
-        NSLog("[SwiftTermIME] compose pending=%@ composing=%@",
-              imePending, text)
+        terminal.feed(text: "\u{1B}8\u{1B}[K")
+        terminal.feed(text: imeBuffer)
+        NSLog("[SwiftTermIME] compose buffer=%@", imeBuffer)
         queuePendingDisplay()
     }
 
@@ -2068,16 +2079,27 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
     /// to the PTY in one shot. Echo from the shell will redraw at the saved
     /// cursor position because we restored it before clearing.
     private func flushHangulComposition() {
-        guard imeComposing != nil else { return }
-        let toSend = imePending + (imeComposing ?? "")
+        guard !imeBuffer.isEmpty else { return }
+        let toSend = imeBuffer
         terminal.feed(text: "\u{1B}8\u{1B}[K")
-        if !toSend.isEmpty {
-            NSLog("[SwiftTermIME] flush sending: %@", toSend)
-            self.send(txt: toSend)
-        }
-        imePending = ""
-        imeComposing = nil
+        NSLog("[SwiftTermIME] flush sending: %@", toSend)
+        self.send(txt: toSend)
+        imeBuffer = ""
         queuePendingDisplay()
+    }
+
+    /// BS while composing: shrink the local buffer and re-render. Returns
+    /// true if BS was absorbed locally (caller must skip the PTY send).
+    private func handleBackspaceForIME() -> Bool {
+        guard !imeBuffer.isEmpty else { return false }
+        imeBuffer = String(imeBuffer.dropLast())
+        terminal.feed(text: "\u{1B}8\u{1B}[K")
+        if !imeBuffer.isEmpty {
+            terminal.feed(text: imeBuffer)
+        }
+        NSLog("[SwiftTermIME] BS local, buffer=%@", imeBuffer)
+        queuePendingDisplay()
+        return true
     }
 
     func isHangul(_ text: String) -> Bool {
