@@ -227,6 +227,7 @@ extension TerminalView: UITextInput {
     }
 
     public func setMarkedText(_ markedText: String?, selectedRange: NSRange) {
+        NSLog("[SwiftTermIME] setMarkedText: %@", markedText ?? "<nil>")
         uitiLog("setMarkedText(\(markedText?.debugDescription ?? "nil"), selectedRange:\(selectedRange)) \(textInputStateDescription())")
 
         let rangeToReplace = _markedTextRange ?? _selectedTextRange
