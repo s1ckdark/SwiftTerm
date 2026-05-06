@@ -1629,15 +1629,14 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
                 // buffer "한글" then `insertText("한글a")`. Strip the duplicate
                 // prefix so zsh doesn't see "한글한글a".
                 let suffix = String(textToInsert.dropFirst(imeBuffer.count))
-                NSLog("[SwiftTermIME] prefix-match commit: buffer=%@ suffix=%@",
-                      imeBuffer, suffix)
+                imeLog("prefix-match commit: buffer=\(imeBuffer) suffix=\(suffix)")
                 flushHangulComposition()
                 if !suffix.isEmpty {
                     self.send(txt: suffix)
                 }
             } else {
                 flushHangulComposition()
-                NSLog("[SwiftTermIME] sending bytes: %@", textToInsert)
+                imeLog("sending bytes: \(textToInsert)")
                 self.send(txt: textToInsert)
             }
         }
@@ -1653,7 +1652,7 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
         Soft keyboard input. Hardware keyboard text input is delivered here; special keys are handled in pressesBegan.
     */
     open func insertText(_ text: String) {
-        NSLog("[SwiftTermIME] insertText: %@", text)
+        imeLog("insertText: \(text)")
         uitiLog("insertText(\(text.debugDescription)) \(textInputStateDescription())")
         commitTextInput(text, applyModifiers: true)
     }
@@ -2053,6 +2052,27 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
     // shot and the local rendering is erased, so zsh only sees finished text.
     var imeBuffer: String = ""
 
+    /// Append an IME-trace line to ~/Documents/ime.log inside the app
+    /// container. NSLog → console-attached has been unreliable in practice
+    /// (events drop after the first one); a flat file we can pull with
+    /// `xcrun devicectl device copy from` gives a complete trace.
+    func imeLog(_ msg: String) {
+        NSLog("[SwiftTermIME] %@", msg)
+        guard let docs = try? FileManager.default.url(
+            for: .documentDirectory, in: .userDomainMask,
+            appropriateFor: nil, create: true) else { return }
+        let url = docs.appendingPathComponent("ime.log")
+        let line = ISO8601DateFormatter().string(from: Date()) + " " + msg + "\n"
+        guard let data = line.data(using: .utf8) else { return }
+        if let h = try? FileHandle(forWritingTo: url) {
+            try? h.seekToEnd()
+            try? h.write(contentsOf: data)
+            try? h.close()
+        } else {
+            try? data.write(to: url)
+        }
+    }
+
     /// Render (or re-render) the imeBuffer locally at the saved cursor.
     private func handleHangulCompose(_ text: String) {
         let newLead = hangulLeadIndex(text)
@@ -2077,7 +2097,7 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
         }
         terminal.feed(text: "\u{1B}8\u{1B}[K")
         terminal.feed(text: imeBuffer)
-        NSLog("[SwiftTermIME] compose buffer=%@", imeBuffer)
+        imeLog("compose buffer=\(imeBuffer)")
         queuePendingDisplay()
     }
 
@@ -2123,7 +2143,7 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
         guard !imeBuffer.isEmpty else { return }
         let toSend = imeBuffer
         terminal.feed(text: "\u{1B}8\u{1B}[K")
-        NSLog("[SwiftTermIME] flush sending: %@", toSend)
+        imeLog("flush sending: \(toSend)")
         self.send(txt: toSend)
         imeBuffer = ""
         queuePendingDisplay()
@@ -2143,7 +2163,7 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
         if !imeBuffer.isEmpty {
             terminal.feed(text: imeBuffer)
         }
-        NSLog("[SwiftTermIME] mirrorMarked buffer=%@", imeBuffer)
+        imeLog("mirrorMarked buffer=\(imeBuffer)")
         queuePendingDisplay()
     }
 
@@ -2167,7 +2187,7 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
         if !imeBuffer.isEmpty {
             terminal.feed(text: imeBuffer)
         }
-        NSLog("[SwiftTermIME] BS local, buffer=%@", imeBuffer)
+        imeLog("BS local, buffer=\(imeBuffer)")
         queuePendingDisplay()
         return true
     }
@@ -2234,7 +2254,7 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
             imeBuffer = String(composed)
         }
         terminal.feed(text: imeBuffer)
-        NSLog("[SwiftTermIME] koreanFinal compose buffer=%@", imeBuffer)
+        imeLog("koreanFinal compose buffer=\(imeBuffer)")
         queuePendingDisplay()
         return true
     }

@@ -227,7 +227,7 @@ extension TerminalView: UITextInput {
     }
 
     public func setMarkedText(_ markedText: String?, selectedRange: NSRange) {
-        NSLog("[SwiftTermIME] setMarkedText: %@", markedText ?? "<nil>")
+        imeLog("setMarkedText: \(markedText ?? "<nil>")")
         uitiLog("setMarkedText(\(markedText?.debugDescription ?? "nil"), selectedRange:\(selectedRange)) \(textInputStateDescription())")
 
         // iOS path (e.g. iPad with hardware Korean keyboard): mirror the
@@ -281,7 +281,7 @@ extension TerminalView: UITextInput {
     
     public func unmarkText() {
         uitiLog("unmarkText() \(textInputStateDescription())")
-        NSLog("[SwiftTermIME] unmarkText buffer=%@", imeBuffer)
+        imeLog("unmarkText buffer=\(imeBuffer)")
         if let previouslyMarkedRange = _markedTextRange {
             // If our IME mirror buffer has content, the marked text is already
             // drawn locally — flush it to the PTY in one shot. We cannot fall
