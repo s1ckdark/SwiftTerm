@@ -2078,7 +2078,7 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
     /// End composition: erase local rendering and send the accumulated bytes
     /// to the PTY in one shot. Echo from the shell will redraw at the saved
     /// cursor position because we restored it before clearing.
-    private func flushHangulComposition() {
+    func flushHangulComposition() {
         guard !imeBuffer.isEmpty else { return }
         let toSend = imeBuffer
         terminal.feed(text: "\u{1B}8\u{1B}[K")
