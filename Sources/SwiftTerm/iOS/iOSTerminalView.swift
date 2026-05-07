@@ -2077,13 +2077,26 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
     private func handleHangulCompose(_ text: String) {
         imeLastBSEmpty = nil
         imeSwallowExtraBS = 0
+        let expectingReemit = imeExpectingReemit
+        let expectingPhantom = imeExpectingPhantomMedial
+        imeExpectingReemit = false
+        imeExpectingPhantomMedial = false
         // iPad re-emits the just-flushed syllable when transitioning to a
         // new syllable lead (e.g. '안' flushed, then iPad sends '안' again
-        // before '도'). Drop the duplicate so PTY doesn't accumulate '안안'.
-        if let lastFlushed = imeLastFlushedSyllable,
-           text.count == 1, text.first == lastFlushed,
-           imeBuffer.isEmpty {
+        // before '도'). Discard if it matches lastFlushed and we expected
+        // a re-emit (BS path just fired) — fires regardless of buffer state
+        // so post-revert cases work too.
+        if expectingReemit, let lastFlushed = imeLastFlushedSyllable,
+           text.count == 1, text.first == lastFlushed {
             imeLog("re-emit duplicate dropped: \(text)")
+            return
+        }
+        // After flushing a compound-medial syllable (e.g. 되), iPad emits a
+        // phantom medial jamo that doesn't belong to anything in our buffer.
+        // Drop it.
+        if expectingPhantom, text.count == 1,
+           let c = text.first, isStandaloneMedialJamo(c) {
+            imeLog("phantom medial dropped: \(text)")
             return
         }
         // Any non-BS event invalidates a pending koreanFinal revert.
@@ -2128,6 +2141,27 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
         terminal.feed(text: imeBuffer)
         imeLog("compose buffer=\(imeBuffer)")
         queuePendingDisplay()
+    }
+
+    /// True when `c` is a Hangul medial jamo (compat block: ㅏ, ㅐ, ㅑ, ...).
+    /// Used to detect iPad's phantom medial after a compound-medial flush.
+    private func isStandaloneMedialJamo(_ c: Character) -> Bool {
+        guard c.unicodeScalars.count == 1, let s = c.unicodeScalars.first
+        else { return false }
+        let v = Int(s.value)
+        return (0x314F...0x3163).contains(v)   // ㅏ..ㅣ
+    }
+
+    /// True when `c` is a Hangul syllable whose medial is one of the seven
+    /// compound vowels (ㅘ ㅙ ㅚ ㅝ ㅞ ㅟ ㅢ). iPad's IME tends to emit a
+    /// phantom standalone medial after flushing such a syllable.
+    private func hasCompoundMedialSyllable(_ c: Character) -> Bool {
+        guard c.unicodeScalars.count == 1, let s = c.unicodeScalars.first
+        else { return false }
+        let v = Int(s.value)
+        guard (0xAC00...0xD7A3).contains(v) else { return false }
+        let vIndex = ((v - 0xAC00) / 28) % 21
+        return [9, 10, 11, 14, 15, 16, 19].contains(vIndex)
     }
 
     /// True when `c` is a Hangul syllable that already has a final consonant
@@ -2212,7 +2246,13 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
         self.send(txt: toSend)
         // Remember the LAST char of what we flushed so iPad's re-emit of that
         // syllable can be dropped as a duplicate by handleHangulCompose.
-        imeLastFlushedSyllable = toSend.last
+        let lastChar = toSend.last
+        imeLastFlushedSyllable = lastChar
+        // If the flushed syllable carries a compound medial (e.g. 되),
+        // iPad will emit a phantom standalone medial after the trailing BS.
+        if let c = lastChar, hasCompoundMedialSyllable(c) {
+            imeExpectingPhantomMedial = true
+        }
         imeBuffer = ""
         imeKoreanFinalRevert = nil
         queuePendingDisplay()
@@ -2271,6 +2311,17 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
     /// second would drop the reverted char unless we also swallow it.
     var imeSwallowExtraBS: Int = 0
 
+    /// True when iPad's BS pattern just fired and we expect the next single
+    /// insertText to be a re-emission of imeLastFlushedSyllable. Cleared on
+    /// the next handleHangulCompose call regardless of whether we discarded.
+    var imeExpectingReemit: Bool = false
+
+    /// True when we just flushed a compound-medial syllable (ㅘ ㅙ ㅚ ㅝ ㅞ
+    /// ㅟ ㅢ). iPad emits a phantom standalone medial jamo after BS that
+    /// our buffer model has no use for; this flag tells handleHangulCompose
+    /// to drop one such jamo.
+    var imeExpectingPhantomMedial: Bool = false
+
     /// BS while composing: shrink the local buffer and re-render. Returns
     /// true if BS was absorbed locally (caller must skip the PTY send).
     private func handleBackspaceForIME() -> Bool {
@@ -2291,8 +2342,10 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
             terminal.feed(text: imeBuffer)
             imeLog("BS revert koreanFinal, buffer=\(imeBuffer)")
             imeKoreanFinalRevert = nil
-            // Pre-arm to swallow the next BS (iPad's BS BS pattern).
+            // Pre-arm to swallow the next BS (iPad's BS BS pattern) and
+            // expect the re-emit of lastFlushed that follows.
             imeSwallowExtraBS = 1
+            imeExpectingReemit = true
             queuePendingDisplay()
             return true
         }
@@ -2311,6 +2364,7 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
         // 500 ms, swallow this one — it's iPad's redundant trailing BS.
         if let last = imeLastBSEmpty, Date().timeIntervalSince(last) < 0.5 {
             imeLog("BS swallow (extra after empty)")
+            imeExpectingReemit = true
             return true
         }
         return false
