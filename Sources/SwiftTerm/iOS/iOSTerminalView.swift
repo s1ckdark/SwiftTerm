@@ -2076,6 +2076,17 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
     /// Render (or re-render) the imeBuffer locally at the saved cursor.
     private func handleHangulCompose(_ text: String) {
         imeLastBSEmpty = nil
+        // iPad re-emits the just-flushed syllable when transitioning to a
+        // new syllable lead (e.g. '안' flushed, then iPad sends '안' again
+        // before '도'). Drop the duplicate so PTY doesn't accumulate '안안'.
+        if let lastFlushed = imeLastFlushedSyllable,
+           text.count == 1, text.first == lastFlushed,
+           imeBuffer.isEmpty {
+            imeLog("re-emit duplicate dropped: \(text)")
+            return
+        }
+        // Any non-BS event invalidates a pending koreanFinal revert.
+        imeKoreanFinalRevert = nil
         let newLead = hangulLeadIndex(text)
         let lastLead = imeBuffer.last.flatMap { hangulLeadIndex(String($0)) }
 
@@ -2198,7 +2209,11 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
         terminal.feed(text: "\u{1B}8\u{1B}[K")
         imeLog("flush sending: \(toSend)")
         self.send(txt: toSend)
+        // Remember the LAST char of what we flushed so iPad's re-emit of that
+        // syllable can be dropped as a duplicate by handleHangulCompose.
+        imeLastFlushedSyllable = toSend.last
         imeBuffer = ""
+        imeKoreanFinalRevert = nil
         queuePendingDisplay()
     }
 
@@ -2239,9 +2254,33 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
     /// character zsh thinks is committed.
     var imeLastBSEmpty: Date?
 
+    /// The single syllable most recently flushed to the PTY. Used to drop
+    /// iPad's redundant re-emission of the same syllable that follows a
+    /// BS BS sequence — without dropping, PTY would see '안안' for '안되'.
+    var imeLastFlushedSyllable: Character?
+
+    /// What to restore on the next BS instead of a plain dropLast. Set when
+    /// tryComposeKoreanFinal pre-emptively merges a final consonant onto the
+    /// previous syllable (e.g. 스 + ㅌ → 슽). When iPad disagrees and asks us
+    /// to undo, we revert to the original syllable rather than losing it.
+    var imeKoreanFinalRevert: Character?
+
     /// BS while composing: shrink the local buffer and re-render. Returns
     /// true if BS was absorbed locally (caller must skip the PTY send).
     private func handleBackspaceForIME() -> Bool {
+        // Revert a speculative koreanFinal compose if one is pending. iPad
+        // typically sends BS after we've prematurely merged a final consonant,
+        // wanting us to put back the original syllable so the new jamo can
+        // become a fresh lead instead.
+        if !imeBuffer.isEmpty, let revert = imeKoreanFinalRevert {
+            imeBuffer = String(imeBuffer.dropLast()) + String(revert)
+            terminal.feed(text: "\u{1B}8\u{1B}[K")
+            terminal.feed(text: imeBuffer)
+            imeLog("BS revert koreanFinal, buffer=\(imeBuffer)")
+            imeKoreanFinalRevert = nil
+            queuePendingDisplay()
+            return true
+        }
         if !imeBuffer.isEmpty {
             imeBuffer = String(imeBuffer.dropLast())
             terminal.feed(text: "\u{1B}8\u{1B}[K")
@@ -2317,11 +2356,16 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
         // sendBackspaceKey() + send(txt: composed) which bypassed our buffer
         // and produced ghosted duplicates ('한한' for '한글').
         if !imeBuffer.isEmpty {
+            // Remember what to restore if iPad turns around and asks us to
+            // undo the compose (it will when the next key proves the new
+            // jamo was actually a lead, not a final).
+            imeKoreanFinalRevert = imeBuffer.last
             imeBuffer = String(imeBuffer.dropLast()) + String(composed)
             terminal.feed(text: "\u{1B}8\u{1B}[K")
         } else {
             terminal.feed(text: "\u{1B}7")
             imeBuffer = String(composed)
+            imeKoreanFinalRevert = nil
         }
         terminal.feed(text: imeBuffer)
         imeLog("koreanFinal compose buffer=\(imeBuffer)")
