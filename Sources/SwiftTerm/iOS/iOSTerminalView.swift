@@ -2123,18 +2123,12 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
             // Korean IME emits the second medial as a standalone jamo instead
             // of replacing the syllable, so we synthesize the compound here.
             imeBuffer = String(imeBuffer.dropLast()) + String(combined)
-        } else if let last = imeBuffer.last, isClosedSyllable(last) {
-            // Different lead AND last char is a closed syllable (has final or
-            // compound medial). iPad emits BS BS to clear the active composing
-            // area on next-syllable transitions but DOES NOT re-emit closed
-            // syllables — so '안되' + 'ㄴ' would lose 안되 entirely. Flush
-            // them to the PTY now; the upcoming BS BS only ever sees the new
-            // lead char in our buffer.
-            flushHangulComposition()
-            terminal.feed(text: "\u{1B}7")
-            imeBuffer = text
         } else {
             // Different lead → previous syllable committed implicitly; append.
+            // Mark the size BEFORE this append so subsequent BS events can't
+            // shrink the buffer past the syllable boundary (iPad sends BS BS
+            // on transitions and we don't want to lose the previous syllable).
+            imeTransitionPoint = imeBuffer.count
             imeBuffer += text
         }
         terminal.feed(text: "\u{1B}8\u{1B}[K")
@@ -2255,6 +2249,7 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
         }
         imeBuffer = ""
         imeKoreanFinalRevert = nil
+        imeTransitionPoint = 0
         queuePendingDisplay()
     }
 
@@ -2322,6 +2317,12 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
     /// to drop one such jamo.
     var imeExpectingPhantomMedial: Bool = false
 
+    /// Buffer length at the most recent syllable boundary (different-lead
+    /// append). BS events that would shrink imeBuffer below this length are
+    /// swallowed — iPad's BS BS pattern would otherwise drop the previous
+    /// syllable along with the experimental new lead.
+    var imeTransitionPoint: Int = 0
+
     /// BS while composing: shrink the local buffer and re-render. Returns
     /// true if BS was absorbed locally (caller must skip the PTY send).
     private func handleBackspaceForIME() -> Bool {
@@ -2350,6 +2351,13 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
             return true
         }
         if !imeBuffer.isEmpty {
+            // Don't shrink past the last different-lead syllable boundary —
+            // iPad's BS BS pattern would otherwise wipe the previous syllable.
+            if imeBuffer.count <= imeTransitionPoint {
+                imeLog("BS swallow (would cross transition=\(imeTransitionPoint))")
+                imeExpectingReemit = true
+                return true
+            }
             imeBuffer = String(imeBuffer.dropLast())
             terminal.feed(text: "\u{1B}8\u{1B}[K")
             if !imeBuffer.isEmpty {
