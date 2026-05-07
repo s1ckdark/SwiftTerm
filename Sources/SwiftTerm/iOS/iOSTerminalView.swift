@@ -51,6 +51,13 @@ public extension Notification.Name {
  * Use the `configureNativeColors()` to set the defaults colors for the view to match the OS
  * defaults, otherwise, this uses its own set of defaults colors.
  */
+/// Lets a host app intercept hardware key presses before SwiftTerm runs its
+/// own text-input pipeline. Used to plug a custom Korean composer that owns
+/// jamo-level composition without iPad's IME getting in the way.
+public protocol IMEKeyHandling: AnyObject {
+    func handlePresses(_ presses: Set<UIPress>) -> Bool
+}
+
 open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollViewDelegate, TerminalDelegate, UIPointerInteractionDelegate {
     public static var textInputDebugEnabled: Bool = ProcessInfo.processInfo.environment["SWIFTTERM_TEXT_INPUT_DEBUG"] == "1"
     internal static var textInputLogCounter: Int = 0
@@ -2658,7 +2665,17 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
     /// property in case someone needs the return key to send different sequences.
     public var returnByteSequence: [UInt8] = [13]
     
+    /// Delegate that gets first crack at every hardware key press. The host
+    /// app uses this to drive a custom Hangul composer with raw post-IME
+    /// characters (UIKey.characters) — bypassing iPad's IME quirks entirely.
+    /// If the delegate returns true, SwiftTerm's normal text-input path is
+    /// skipped for that press.
+    public weak var imeKeyDelegate: IMEKeyHandling?
+
     public override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if let delegate = imeKeyDelegate, delegate.handlePresses(presses) {
+            return
+        }
         var didHandleEvent = false
         let wasCommandActive = commandActive
         let kittyFlags = terminal.keyboardEnhancementFlags
