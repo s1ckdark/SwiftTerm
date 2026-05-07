@@ -2075,6 +2075,7 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
 
     /// Render (or re-render) the imeBuffer locally at the saved cursor.
     private func handleHangulCompose(_ text: String) {
+        imeLastBSEmpty = nil
         let newLead = hangulLeadIndex(text)
         let lastLead = imeBuffer.last.flatMap { hangulLeadIndex(String($0)) }
 
@@ -2097,6 +2098,16 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
             // Korean IME emits the second medial as a standalone jamo instead
             // of replacing the syllable, so we synthesize the compound here.
             imeBuffer = String(imeBuffer.dropLast()) + String(combined)
+        } else if let last = imeBuffer.last, isClosedSyllable(last) {
+            // Different lead AND last char is a closed syllable (has final or
+            // compound medial). iPad emits BS BS to clear the active composing
+            // area on next-syllable transitions but DOES NOT re-emit closed
+            // syllables — so '안되' + 'ㄴ' would lose 안되 entirely. Flush
+            // them to the PTY now; the upcoming BS BS only ever sees the new
+            // lead char in our buffer.
+            flushHangulComposition()
+            terminal.feed(text: "\u{1B}7")
+            imeBuffer = text
         } else {
             // Different lead → previous syllable committed implicitly; append.
             imeBuffer += text
@@ -2105,6 +2116,23 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
         terminal.feed(text: imeBuffer)
         imeLog("compose buffer=\(imeBuffer)")
         queuePendingDisplay()
+    }
+
+    /// True when `c` is a Hangul syllable that already has a final consonant
+    /// or a compound medial — i.e. it is "complete" enough that the user has
+    /// moved past it. iPad IME treats these as committed and won't re-emit
+    /// them on subsequent BS BS patterns, so we should flush to the PTY.
+    private func isClosedSyllable(_ c: Character) -> Bool {
+        guard c.unicodeScalars.count == 1, let scalar = c.unicodeScalars.first
+        else { return false }
+        let v = Int(scalar.value)
+        guard (0xAC00...0xD7A3).contains(v) else { return false }
+        let sIndex = v - 0xAC00
+        let tIndex = sIndex % 28
+        if tIndex != 0 { return true }                       // has final
+        let vIndex = (sIndex / 28) % 21
+        // Compound medial vowel indices: ㅘ ㅙ ㅚ ㅝ ㅞ ㅟ ㅢ
+        return [9, 10, 11, 14, 15, 16, 19].contains(vIndex)
     }
 
     /// True when `c` is either a single jamo or a Hangul syllable with no
@@ -2203,18 +2231,35 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
         }
     }
 
+    /// Timestamp of the most recent BS that emptied imeBuffer. Used to
+    /// swallow the extra BS in iPad's BS BS pattern: when iPad transitions
+    /// from a closed syllable to a new lead, it emits 2 BS even though only
+    /// one is needed for our buffer (the closed syllable is already flushed).
+    /// Without swallowing, that second BS would reach the PTY and delete a
+    /// character zsh thinks is committed.
+    var imeLastBSEmpty: Date?
+
     /// BS while composing: shrink the local buffer and re-render. Returns
     /// true if BS was absorbed locally (caller must skip the PTY send).
     private func handleBackspaceForIME() -> Bool {
-        guard !imeBuffer.isEmpty else { return false }
-        imeBuffer = String(imeBuffer.dropLast())
-        terminal.feed(text: "\u{1B}8\u{1B}[K")
         if !imeBuffer.isEmpty {
-            terminal.feed(text: imeBuffer)
+            imeBuffer = String(imeBuffer.dropLast())
+            terminal.feed(text: "\u{1B}8\u{1B}[K")
+            if !imeBuffer.isEmpty {
+                terminal.feed(text: imeBuffer)
+            }
+            imeLog("BS local, buffer=\(imeBuffer)")
+            if imeBuffer.isEmpty { imeLastBSEmpty = Date() }
+            queuePendingDisplay()
+            return true
         }
-        imeLog("BS local, buffer=\(imeBuffer)")
-        queuePendingDisplay()
-        return true
+        // Buffer empty. If the previous BS just emptied within the last
+        // 500 ms, swallow this one — it's iPad's redundant trailing BS.
+        if let last = imeLastBSEmpty, Date().timeIntervalSince(last) < 0.5 {
+            imeLog("BS swallow (extra after empty)")
+            return true
+        }
+        return false
     }
 
     func isHangul(_ text: String) -> Bool {
