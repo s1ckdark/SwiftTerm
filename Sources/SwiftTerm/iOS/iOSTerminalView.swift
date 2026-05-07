@@ -2433,7 +2433,14 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
         guard _selectedTextRange.isEmpty, _selectedTextRange.endPosition.offset == textInputStorage.count else { return false }
         guard text.count == 1, let jamo = text.first else { return false }
         guard let finalIndex = koreanFinalIndex[jamo] else { return false }
-        guard let lastChar = textInputStorage.last else { return false }
+        // Base the compose on OUR imeBuffer rather than textInputStorage.
+        // textInputStorage accumulates everything ever insertText'd by the
+        // IME without ever shrinking on BS, so it can hold stale syllables
+        // that compose into completely unrelated chars (e.g. an old '서'
+        // collides with a fresh 'ㅁ' to produce '섬' when the user really
+        // typed '주' + 'ㅁ'). imeBuffer always reflects what's actually on
+        // screen.
+        guard let lastChar = imeBuffer.last else { return false }
         guard let composed = composeHangulSyllable(base: lastChar, finalIndex: finalIndex) else { return false }
 
         uitiLog("koreanComposeFinal base:\(lastChar) jamo:\(jamo) -> \(composed)")
