@@ -2135,6 +2135,7 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
             // shrink the buffer past the syllable boundary (iPad sends BS BS
             // on transitions and we don't want to lose the previous syllable).
             imeTransitionPoint = imeBuffer.count
+            imeTransitionTime = Date()
             imeBuffer += text
         }
         terminal.feed(text: "\u{1B}8\u{1B}[K")
@@ -2329,6 +2330,11 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
     /// syllable along with the experimental new lead.
     var imeTransitionPoint: Int = 0
 
+    /// Timestamp of the last different-lead append. The transition guard
+    /// only enforces within 500 ms — long enough to absorb iPad's BS BS,
+    /// short enough that a deliberate user BS still deletes characters.
+    var imeTransitionTime: Date?
+
     /// BS while composing: shrink the local buffer and re-render. Returns
     /// true if BS was absorbed locally (caller must skip the PTY send).
     private func handleBackspaceForIME() -> Bool {
@@ -2359,7 +2365,12 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
         if !imeBuffer.isEmpty {
             // Don't shrink past the last different-lead syllable boundary —
             // iPad's BS BS pattern would otherwise wipe the previous syllable.
-            if imeBuffer.count <= imeTransitionPoint {
+            // Only enforced briefly after the transition (500 ms) so that a
+            // deliberate user BS still deletes past it.
+            let transitionActive = imeTransitionTime.map {
+                Date().timeIntervalSince($0) < 0.5
+            } ?? false
+            if transitionActive, imeBuffer.count <= imeTransitionPoint {
                 imeLog("BS swallow (would cross transition=\(imeTransitionPoint))")
                 imeExpectingReemit = true
                 if let c = imeBuffer.last, hasCompoundMedialSyllable(c) {
@@ -2489,11 +2500,31 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
         let lIndex = sIndex / (vCount * tCount)
         let vIndex = (sIndex % (vCount * tCount)) / tCount
         let tIndex = sIndex % tCount
-        guard tIndex == 0 else { return nil }
-        let newScalarValue = sBase + (lIndex * vCount + vIndex) * tCount + finalIndex
+        // Either the syllable has no final yet (just attach), or it has a
+        // single final that combines with the new jamo into a compound final
+        // (e.g. ㄴ + ㅎ = ㄶ in 안 + ㅎ → 않).
+        let newTIndex: Int
+        if tIndex == 0 {
+            newTIndex = finalIndex
+        } else if let compound = compoundFinalTable[tIndex]?[finalIndex] {
+            newTIndex = compound
+        } else {
+            return nil
+        }
+        let newScalarValue = sBase + (lIndex * vCount + vIndex) * tCount + newTIndex
         guard let newScalar = UnicodeScalar(newScalarValue) else { return nil }
         return Character(newScalar)
     }
+
+    /// Compound final consonants in modern Korean. Maps existing final index
+    /// → incoming jamo final index → resulting compound final index.
+    private let compoundFinalTable: [Int: [Int: Int]] = [
+        1:  [19: 3],                                       // ㄱ + ㅅ = ㄳ
+        4:  [22: 5, 27: 6],                                // ㄴ + ㅈ/ㅎ = ㄵ/ㄶ
+        8:  [1: 9, 16: 10, 17: 11, 19: 12,
+             25: 13, 26: 14, 27: 15],                     // ㄹ + … (7 compounds)
+        17: [19: 18],                                      // ㅂ + ㅅ = ㅄ
+    ]
 
     func ensureCaretIsVisible ()
     {
