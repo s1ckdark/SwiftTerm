@@ -2076,6 +2076,7 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
     /// Render (or re-render) the imeBuffer locally at the saved cursor.
     private func handleHangulCompose(_ text: String) {
         imeLastBSEmpty = nil
+        imeSwallowExtraBS = 0
         // iPad re-emits the just-flushed syllable when transitioning to a
         // new syllable lead (e.g. '안' flushed, then iPad sends '안' again
         // before '도'). Drop the duplicate so PTY doesn't accumulate '안안'.
@@ -2265,9 +2266,21 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
     /// to undo, we revert to the original syllable rather than losing it.
     var imeKoreanFinalRevert: Character?
 
+    /// Counter for BS events to silently swallow. iPad sends BS BS to undo
+    /// a koreanFinal compose; the first BS triggers our revert path, the
+    /// second would drop the reverted char unless we also swallow it.
+    var imeSwallowExtraBS: Int = 0
+
     /// BS while composing: shrink the local buffer and re-render. Returns
     /// true if BS was absorbed locally (caller must skip the PTY send).
     private func handleBackspaceForIME() -> Bool {
+        // iPad sometimes sends a trailing BS we've already accounted for
+        // (e.g. the second BS in BS BS after a revert). Swallow it.
+        if imeSwallowExtraBS > 0 {
+            imeSwallowExtraBS -= 1
+            imeLog("BS swallow (post-revert)")
+            return true
+        }
         // Revert a speculative koreanFinal compose if one is pending. iPad
         // typically sends BS after we've prematurely merged a final consonant,
         // wanting us to put back the original syllable so the new jamo can
@@ -2278,6 +2291,8 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
             terminal.feed(text: imeBuffer)
             imeLog("BS revert koreanFinal, buffer=\(imeBuffer)")
             imeKoreanFinalRevert = nil
+            // Pre-arm to swallow the next BS (iPad's BS BS pattern).
+            imeSwallowExtraBS = 1
             queuePendingDisplay()
             return true
         }
