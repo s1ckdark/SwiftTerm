@@ -2096,6 +2096,10 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
                 imeLog("re-emit duplicate dropped (in buffer): \(text)")
                 return
             }
+            if let cmBase = imeLastCompoundMedialBase, new == cmBase {
+                imeLog("re-emit duplicate dropped (compound-medial base): \(text)")
+                return
+            }
         }
         // After flushing a compound-medial syllable (e.g. 되), iPad emits a
         // phantom medial jamo that doesn't belong to anything in our buffer.
@@ -2128,6 +2132,9 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
             // Compound vowel absorption (e.g. 도 + ㅣ → 되). iPad's hardware
             // Korean IME emits the second medial as a standalone jamo instead
             // of replacing the syllable, so we synthesize the compound here.
+            // Remember the original base so iPad's later re-emit of it can
+            // be discarded as a duplicate.
+            imeLastCompoundMedialBase = last
             imeBuffer = String(imeBuffer.dropLast()) + String(combined)
         } else {
             // Different lead → previous syllable committed implicitly; append.
@@ -2194,9 +2201,12 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
         if (0x1100...0x11FF).contains(v) || (0x3130...0x318F).contains(v) {
             return true
         }
-        // Syllable: open only when there is no final consonant (tIndex == 0).
+        // Syllable: open only when there is neither a final consonant nor
+        // a compound medial. 되 (compound medial ㅚ) counts as closed even
+        // though tIndex == 0 — same-lead REPLACE would otherwise turn 되 into
+        // 도 when the next syllable starts with ㄷ.
         if (0xAC00...0xD7A3).contains(v) {
-            return (v - 0xAC00) % 28 == 0
+            return !isClosedSyllable(c)
         }
         return false
     }
@@ -2334,6 +2344,11 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
     /// only enforces within 500 ms — long enough to absorb iPad's BS BS,
     /// short enough that a deliberate user BS still deletes characters.
     var imeTransitionTime: Date?
+
+    /// The pre-compound-medial syllable (e.g. 도 right before it became 되).
+    /// iPad sometimes re-emits this base after a koreanFinal undo even
+    /// though our buffer has the compound. Drop the duplicate when seen.
+    var imeLastCompoundMedialBase: Character?
 
     /// BS while composing: shrink the local buffer and re-render. Returns
     /// true if BS was absorbed locally (caller must skip the PTY send).
