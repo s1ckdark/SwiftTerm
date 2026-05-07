@@ -2081,15 +2081,19 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
         let expectingPhantom = imeExpectingPhantomMedial
         imeExpectingReemit = false
         imeExpectingPhantomMedial = false
-        // iPad re-emits the just-flushed syllable when transitioning to a
-        // new syllable lead (e.g. '안' flushed, then iPad sends '안' again
-        // before '도'). Discard if it matches lastFlushed and we expected
-        // a re-emit (BS path just fired) — fires regardless of buffer state
-        // so post-revert cases work too.
-        if expectingReemit, let lastFlushed = imeLastFlushedSyllable,
-           text.count == 1, text.first == lastFlushed {
-            imeLog("re-emit duplicate dropped: \(text)")
-            return
+        // iPad re-emits the previously visible syllable after BS BS clears
+        // its mental composing area. The re-emission matches either the last
+        // PTY-flushed syllable (commit case) or the current buffer tail (no
+        // flush case). Drop the duplicate when expectingReemit is armed.
+        if expectingReemit, text.count == 1, let new = text.first {
+            if let lastFlushed = imeLastFlushedSyllable, new == lastFlushed {
+                imeLog("re-emit duplicate dropped (lastFlushed): \(text)")
+                return
+            }
+            if let last = imeBuffer.last, new == last {
+                imeLog("re-emit duplicate dropped (buffer tail): \(text)")
+                return
+            }
         }
         // After flushing a compound-medial syllable (e.g. 되), iPad emits a
         // phantom medial jamo that doesn't belong to anything in our buffer.
