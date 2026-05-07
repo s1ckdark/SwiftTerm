@@ -2081,17 +2081,19 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
         let expectingPhantom = imeExpectingPhantomMedial
         imeExpectingReemit = false
         imeExpectingPhantomMedial = false
-        // iPad re-emits the previously visible syllable after BS BS clears
-        // its mental composing area. The re-emission matches either the last
-        // PTY-flushed syllable (commit case) or the current buffer tail (no
-        // flush case). Drop the duplicate when expectingReemit is armed.
+        // iPad re-emits a previously visible syllable after its BS pattern
+        // clears the mental composing area. The re-emit can match the last
+        // PTY-flushed syllable OR ANY syllable currently in our buffer
+        // (iPad sometimes restores the FIRST committed syllable, not just
+        // the most recent one). Drop the duplicate while expectingReemit
+        // is armed so the buffer doesn't accumulate '안하안' etc.
         if expectingReemit, text.count == 1, let new = text.first {
             if let lastFlushed = imeLastFlushedSyllable, new == lastFlushed {
                 imeLog("re-emit duplicate dropped (lastFlushed): \(text)")
                 return
             }
-            if let last = imeBuffer.last, new == last {
-                imeLog("re-emit duplicate dropped (buffer tail): \(text)")
+            if imeBuffer.contains(new) {
+                imeLog("re-emit duplicate dropped (in buffer): \(text)")
                 return
             }
         }
@@ -2360,6 +2362,9 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
             if imeBuffer.count <= imeTransitionPoint {
                 imeLog("BS swallow (would cross transition=\(imeTransitionPoint))")
                 imeExpectingReemit = true
+                if let c = imeBuffer.last, hasCompoundMedialSyllable(c) {
+                    imeExpectingPhantomMedial = true
+                }
                 return true
             }
             imeBuffer = String(imeBuffer.dropLast())
