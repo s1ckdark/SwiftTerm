@@ -236,11 +236,21 @@ extension TerminalView: UITextInput {
         // touches internal storage and the terminal stays blank during
         // composition. The PTY commit happens later via unmarkText →
         // insertText (caught by commitTextInput's prefix-match branch).
+        //
+        // Mac Catalyst skips the mirror: macOS's system IME draws its own
+        // floating composition bar above the cursor, AND it commits via
+        // insertText directly (not unmarkText), so the imeBuffer guard in
+        // unmarkText never fires. Letting the iPad mirror path run on
+        // Catalyst produces duplicate syllables ('한한글글이' for '한글이')
+        // because the mirrored grid stays drawn while insertText emits the
+        // finalized syllable a second time.
+        #if !targetEnvironment(macCatalyst)
         if let m = markedText {
             mirrorMarkedToLocal(m)
         } else {
             clearMarkedLocal()
         }
+        #endif
 
         let rangeToReplace = _markedTextRange ?? _selectedTextRange
         let rangeStartPosition = rangeToReplace.startPosition
