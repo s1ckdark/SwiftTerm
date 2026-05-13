@@ -2672,6 +2672,34 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
     /// skipped for that press.
     public weak var imeKeyDelegate: IMEKeyHandling?
 
+    /// Claim Ctrl+letter chords as our own UIKeyCommands so AppKit's
+    /// text-editing layer doesn't translate them into Emacs cursor moves
+    /// (Ctrl+A → "move to beginning of line" etc.) before the terminal
+    /// sees them. The handler converts the keystroke to the standard
+    /// control byte (Ctrl+A → 0x01) and forwards it to the PTY.
+    public override var keyCommands: [UIKeyCommand]? {
+        var commands = super.keyCommands ?? []
+        for code in 0x61...0x7A {  // 'a'...'z'
+            guard let scalar = UnicodeScalar(code) else { continue }
+            let cmd = UIKeyCommand(
+                input: String(scalar),
+                modifierFlags: .control,
+                action: #selector(handleControlChord(_:)))
+            if #available(iOS 15.0, *) {
+                cmd.wantsPriorityOverSystemBehavior = true
+            }
+            commands.append(cmd)
+        }
+        return commands
+    }
+
+    @objc private func handleControlChord(_ sender: UIKeyCommand) {
+        guard let input = sender.input,
+              let scalar = input.lowercased().unicodeScalars.first else { return }
+        let byte = UInt8(scalar.value & 0x1F)
+        self.send([byte])
+    }
+
     public override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         if let delegate = imeKeyDelegate, delegate.handlePresses(presses) {
             return
